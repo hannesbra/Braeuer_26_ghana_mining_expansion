@@ -1,0 +1,27 @@
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+.Renviron
+*.Rproj
+
+# Data and outputs never go into git (they live under GHANA_MINING_DATA)
+data/
+Ghana_Tifs/
+*.tif
+*.tiff
+*.vrt
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.kml
+*.rds
+*.pt
+*.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini

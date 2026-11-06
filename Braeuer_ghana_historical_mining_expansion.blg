@@ -1,0 +1,58 @@
+This is BibTeX, Version 0.99e
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: Braeuer_ghana_historical_mining_expansion.aux
+Reallocating 'name_of_file' (item size: 1) to 8 items.
+The style file: apacite.bst
+Reallocating 'name_of_file' (item size: 1) to 11 items.
+Reallocating 'glb_str_end' (item size: 4) to 20 items.
+Reallocating 'glb_str_ptr' (item size: 4) to 20 items.
+Reallocating 'global_strs' (item size: 1) to 4000000 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'wiz_functions' (item size: 4) to 6000 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Reallocating 'wiz_functions' (item size: 4) to 9000 items.
+Reallocating 'singl_function' (item size: 4) to 100 items.
+Database file #1: references.bib
+apacite.bst [2013/07/21 v6.03 APA bibliography style]
+You've used 78 entries,
+            6951 wiz_defined-function locations,
+            1851 strings with 31506 characters,
+and the built_in function-call counts, 180809 in all, are:
+= -- 21301
+> -- 1614
+< -- 9894
++ -- 10440
+- -- 158
+* -- 12602
+:= -- 35200
+add.period$ -- 306
+call.type$ -- 78
+change.case$ -- 1456
+chr.to.int$ -- 0
+cite$ -- 156
+duplicate$ -- 5134
+empty$ -- 6386
+format.name$ -- 2923
+if$ -- 32287
+int.to.chr$ -- 0
+int.to.str$ -- 238
+missing$ -- 0
+newline$ -- 2165
+num.names$ -- 624
+pop$ -- 2660
+preamble$ -- 1
+purify$ -- 426
+quote$ -- 0
+skip$ -- 10161
+stack$ -- 0
+substring$ -- 11240
+swap$ -- 2898
+text.length$ -- 313
+text.prefix$ -- 0
+top$ -- 1
+type$ -- 6240
+warning$ -- 0
+while$ -- 1099
+width$ -- 0
+write$ -- 2808

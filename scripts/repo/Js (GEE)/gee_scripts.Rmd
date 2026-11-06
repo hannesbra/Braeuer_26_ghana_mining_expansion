@@ -1,0 +1,1595 @@
+---
+title: "Google Earth Engine scripts: Landsat composites and training samples"
+subtitle: "Supplement to *Quantification of Ghana's historical mining expansion*"
+author: "Hannes Bräuer (Norwegian University of Life Sciences, NMBU)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    highlight: tango
+  pdf_document:
+    toc: true
+    number_sections: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+# The Earth Engine code below is JavaScript for the GEE Code Editor.
+# It is displayed, not executed, when this document is knitted.
+knitr::opts_chunk$set(eval = FALSE, echo = TRUE)
+```
+
+# Overview
+
+This document reproduces the two Google Earth Engine (GEE) scripts used in
+the study, with their full code. The code chunks are identical to the
+standalone files in the repository's `gee/` folder:
+
+| Script | Purpose | Output |
+|---|---|---|
+| `01_landsat_composites.js` | Annual 3-year dry-season medoid composites, 2000–2019, with spectral indices, texture and terrain bands | 20 GeoTIFFs (Google Drive folder `GEE_Ghana_Mining_Medoid`) |
+| `02_export_training_samples.js` | Reference layers for manual labelling, and export of the labelled points | CSVs (Google Drive folder `GEE_Manual_Sampling`) and GEE table assets |
+
+The composites and the training points are the inputs to the R analysis
+(random forest classification, spatially blocked cross-validation, backward
+transition rules and Monte Carlo uncertainty). See `gee/README.md` for the
+band table, asset requirements and output column definitions.
+
+**To run the code**, open the GEE Code Editor
+(<https://code.earthengine.google.com>), paste the complete script into a new
+file, change the asset paths under `projects/XXX/assets/` to
+your own project, click **Run**, and start the export tasks in the **Tasks**
+tab. The chunks of each script below, taken in order, form the complete file.
+
+Citation: Bräuer, H. (TODO year). Quantification of Ghana's historical mining
+expansion. *GIScience & Remote Sensing*. <https://doi.org/TODO>
+
+# Script 1: Landsat composites (`01_landsat_composites.js`)
+
+**Summary of the method**
+
+- **Study area:** 2019 mining polygons buffered by 5 km; images filtered to
+  Ghana; export cropped to the bounding box of the buffered area.
+- **Temporal window:** for target year *t*, dry-season scenes (1 November to
+  30 April) from the seasons ending in *t*−1, *t* and *t*+1.
+- **Pre-processing:** scenes with < 50 % cloud cover; `QA_PIXEL` masking of
+  cloud, shadow and snow (and cirrus for OLI) at medium or high confidence;
+  Landsat 7 SLC-off gaps masked; Collection 2 Level-2 scaling.
+- **Cross-sensor harmonization:** OLI to ETM+ after Roy et al. (2016).
+- **Compositing:** medoid (Flood, 2013).
+- **Features:** 6 reflectance bands, 12 spectral indices, 5 NIR texture
+  metrics and 4 terrain variables (the 27 classifier features), plus
+  night-light, quality and NDVI-anomaly bands that are exported but not used
+  in the classifier.
+- **Output:** EPSG:32630 (UTM 30N), 30 m, cloud-optimized GeoTIFF.
+
+### Script header
+
+```{js, eval=FALSE}
+// ===============================================================
+// GHANA MINING COMPOSITE
+// Addressing: 3-year dry-season, Medoid, Harmonization, Literature-Endorsed Indices
+// ===============================================================
+
+// Define Landsat collections
+var L5_COLLECTION = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2');
+var L7_COLLECTION = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2');
+var L8_COLLECTION = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2');
+var L9_COLLECTION = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2');
+
+// Get SRTM elevation data
+var SRTM_ELEVATION = ee.Image('USGS/SRTMGL1_003');
+
+// Nightlight data collections
+var VIIRS_DNB = ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG');
+var DMSP_OLS = ee.ImageCollection('NOAA/DMSP-OLS/NIGHTTIME_LIGHTS');
+```
+
+### Configuration
+
+```{js, eval=FALSE}
+// ===============================================================
+// CONFIGURATION
+// ===============================================================
+
+var CONFIG = {
+  BUFFER_KM: 5,
+  CLOUD_THRESHOLD: 50,  // 50%
+  COMPOSITE_METHOD: 'medoid',  // Changed from percentile
+  DRY_SEASON_START_MONTH: 11,  // November
+  DRY_SEASON_END_MONTH: 4,     // April
+  OUTPUT_CRS: 'EPSG:32630',    // UTM Zone 30N for Ghana
+  OUTPUT_SCALE: 30
+};
+```
+
+### Study area
+
+```{js, eval=FALSE}
+// ===============================================================
+// STUDY AREA
+// ===============================================================
+
+var miningPolygons2019 = ee.FeatureCollection('projects/XXX/assets/ghana_polygons2019');
+var bufferedMiningArea = miningPolygons2019.geometry().buffer(CONFIG.BUFFER_KM * 1000);
+var studyArea = bufferedMiningArea;
+var bounds = studyArea.bounds();
+
+var ghana = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+  .filter(ee.Filter.eq('country_na', 'Ghana'));
+var ghanaGeometry = ghana.geometry();
+```
+
+### Dry season dates
+
+```{js, eval=FALSE}
+// ===============================================================
+// DRY SEASON DATES
+// ===============================================================
+
+function getDrySeasonDates(year) {
+  return {
+    start: ee.Date.fromYMD(year - 1, CONFIG.DRY_SEASON_START_MONTH, 1),
+    end: ee.Date.fromYMD(year, CONFIG.DRY_SEASON_END_MONTH, 30)
+  };
+}
+```
+
+### Landsat scaling (Collection 2 Level 2)
+
+```{js, eval=FALSE}
+// ===============================================================
+// LANDSAT SCALING (Collection 2 Level 2)
+// Reference: USGS (2022)
+// ===============================================================
+
+function applyScaleFactorsL5L7(image) {
+  var opticalBands = image.select('SR_B.')
+    .multiply(0.0000275)
+    .add(-0.2)
+    .clamp(0, 1);
+    
+  return image.addBands(opticalBands, null, true)
+    .select(
+      ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7'],
+      ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2']
+    ).toFloat();
+}
+
+function applyScaleFactorsL8L9(image) {
+  var opticalBands = image.select('SR_B.')
+    .multiply(0.0000275)
+    .add(-0.2)
+    .clamp(0, 1);
+    
+  return image.addBands(opticalBands, null, true)
+    .select(
+      ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'],
+      ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2']
+    ).toFloat();
+}
+```
+
+### Cross-sensor harmonization (Roy et al. 2016)
+
+```{js, eval=FALSE}
+// ===============================================================
+// CROSS-SENSOR HARMONIZATION (Roy et al. 2016)
+// Transforms OLI (L8/9) to ETM+ (L7) spectral space
+// ===============================================================
+
+function harmonizeOLItoETM(image) {
+  // Coefficients from Roy et al. (2016) Table 2
+  // OLI = slope * ETM + intercept -> ETM = (OLI - intercept) / slope
+  // For consistency, we transform OLI TO ETM+ reference
+  var coefficients = {
+    BLUE:  {slope: 0.8850, intercept: 0.0183},
+    GREEN: {slope: 0.9317, intercept: 0.0123},
+    RED:   {slope: 0.9372, intercept: 0.0123},
+    NIR:   {slope: 0.8339, intercept: 0.0448},
+    SWIR1: {slope: 0.8639, intercept: 0.0306},
+    SWIR2: {slope: 0.9165, intercept: 0.0116}
+  };
+  
+  var harmonized = image
+    .select('BLUE').subtract(coefficients.BLUE.intercept).divide(coefficients.BLUE.slope).rename('BLUE')
+    .addBands(image.select('GREEN').subtract(coefficients.GREEN.intercept).divide(coefficients.GREEN.slope).rename('GREEN'))
+    .addBands(image.select('RED').subtract(coefficients.RED.intercept).divide(coefficients.RED.slope).rename('RED'))
+    .addBands(image.select('NIR').subtract(coefficients.NIR.intercept).divide(coefficients.NIR.slope).rename('NIR'))
+    .addBands(image.select('SWIR1').subtract(coefficients.SWIR1.intercept).divide(coefficients.SWIR1.slope).rename('SWIR1'))
+    .addBands(image.select('SWIR2').subtract(coefficients.SWIR2.intercept).divide(coefficients.SWIR2.slope).rename('SWIR2'));
+  
+  return harmonized.copyProperties(image, image.propertyNames());
+}
+```
+
+### Cloud masking with confidence levels
+
+```{js, eval=FALSE}
+// ===============================================================
+// ENHANCED CLOUD MASKING WITH CONFIDENCE LEVELS
+// Reference: USGS Landsat Collection 2 QA Band Specification
+// ===============================================================
+
+// Confidence level constants
+var CONFIDENCE = {
+  LOW: 1,      // Bit pattern: 01
+  MEDIUM: 2,   // Bit pattern: 10
+  HIGH: 3      // Bit pattern: 11
+};
+
+// Configurable threshold (set to MEDIUM to mask medium + high confidence)
+var CLOUD_CONFIDENCE_THRESHOLD = CONFIDENCE.MEDIUM;
+var SHADOW_CONFIDENCE_THRESHOLD = CONFIDENCE.MEDIUM;
+
+function maskCloudsL457Enhanced(image) {
+  var qa = image.select('QA_PIXEL');
+  
+  // Basic flags (bits 3-5)
+  var cloudBit = 1 << 3;
+  var shadowBit = 1 << 4;
+  var snowBit = 1 << 5;
+  
+  // Extract confidence levels (2-bit values)
+  // Cloud confidence: bits 8-9
+  var cloudConfidence = qa.rightShift(8).bitwiseAnd(3);
+  // Shadow confidence: bits 10-11
+  var shadowConfidence = qa.rightShift(10).bitwiseAnd(3);
+  
+  // Create masks
+  // Option A: Mask if flag is set AND confidence >= threshold
+  var cloudMask = qa.bitwiseAnd(cloudBit).eq(0)
+    .or(cloudConfidence.lt(CLOUD_CONFIDENCE_THRESHOLD));
+  
+  var shadowMask = qa.bitwiseAnd(shadowBit).eq(0)
+    .or(shadowConfidence.lt(SHADOW_CONFIDENCE_THRESHOLD));
+  
+  var snowMask = qa.bitwiseAnd(snowBit).eq(0);
+  
+  // Combine all masks
+  var combinedMask = cloudMask.and(shadowMask).and(snowMask);
+  
+  // Optional: Add a confidence band for quality assessment
+  var qualityScore = ee.Image.constant(3)
+    .subtract(cloudConfidence.max(shadowConfidence))
+    .rename('CLOUD_CONFIDENCE');
+  
+  return image.updateMask(combinedMask)
+    .addBands(qualityScore);
+}
+
+function maskCloudsL89Enhanced(image) {
+  var qa = image.select('QA_PIXEL');
+  
+  // Basic flags
+  var cloudBit = 1 << 3;
+  var shadowBit = 1 << 4;
+  var snowBit = 1 << 5;
+  var cirrusBit = 1 << 2;
+  
+  // Confidence levels
+  var cloudConfidence = qa.rightShift(8).bitwiseAnd(3);
+  var shadowConfidence = qa.rightShift(10).bitwiseAnd(3);
+  var cirrusConfidence = qa.rightShift(14).bitwiseAnd(3);  // Bits 14-15 for cirrus
+  
+  // Masks with confidence thresholds
+  var cloudMask = qa.bitwiseAnd(cloudBit).eq(0)
+    .or(cloudConfidence.lt(CLOUD_CONFIDENCE_THRESHOLD));
+  
+  var shadowMask = qa.bitwiseAnd(shadowBit).eq(0)
+    .or(shadowConfidence.lt(SHADOW_CONFIDENCE_THRESHOLD));
+  
+  var snowMask = qa.bitwiseAnd(snowBit).eq(0);
+  
+  var cirrusMask = qa.bitwiseAnd(cirrusBit).eq(0)
+    .or(cirrusConfidence.lt(CONFIDENCE.MEDIUM));
+  
+  var combinedMask = cloudMask.and(shadowMask).and(snowMask).and(cirrusMask);
+  
+  // Quality score (higher = more confident it's clear)
+  var maxContamination = cloudConfidence.max(shadowConfidence).max(cirrusConfidence);
+  var qualityScore = ee.Image.constant(3)
+    .subtract(maxContamination)
+    .rename('CLOUD_CONFIDENCE');
+  
+  return image.updateMask(combinedMask)
+    .addBands(qualityScore);
+}
+```
+
+### Medoid compositing (Flood 2013)
+
+```{js, eval=FALSE}
+// ===============================================================
+// MEDOID COMPOSITING (Flood 2013)
+// Selects the actual observation closest to the multi-dimensional median
+// ===============================================================
+
+function calculateMedoid(collection, bands) {
+  var median = collection.select(bands).median();
+  
+  var withDistance = collection.map(function(image) {
+    var diff = image.select(bands).subtract(median);
+    var distance = diff.pow(2).reduce(ee.Reducer.sum()).sqrt();
+    // MULTIPLY BY -1 so qualityMosaic picks MINIMUM distance
+    return image.addBands(distance.multiply(-1).rename('quality'));
+  });
+  
+  var medoid = withDistance.qualityMosaic('quality');
+  return medoid.select(bands);
+}
+
+// Add valid pixel count:
+function addValidPixelCount(collection, bands) {
+  // Count valid (non-masked) pixels per location
+  var validCount = collection.select(bands[0]).map(function(img) {
+    return img.mask();  // 1 where valid, 0 where masked
+  }).reduce(ee.Reducer.sum()).rename('VALID_PIXEL_COUNT');
+  
+  return validCount;
+}
+```
+
+### Landsat 7 processing with explicit SLC-off masking
+
+```{js, eval=FALSE}
+// ===============================================================
+// ENHANCED LANDSAT 7 PROCESSING WITH EXPLICIT SLC-OFF MASKING
+// ===============================================================
+
+function processL7(image) {
+  // 1. Cloud masking
+  var cloudMasked = maskCloudsL457Enhanced(image);
+  
+  // 2. SLC-off gap masking (explicit)
+  var blue = cloudMasked.select('SR_B1');
+  var validMask = blue.gt(0);  // Quick check - gaps are 0 or null
+  var slcMasked = cloudMasked.updateMask(validMask);
+  
+  // 3. Apply scaling
+  return applyScaleFactorsL5L7(slcMasked);
+}
+```
+
+### Nightlight harmonization
+
+```{js, eval=FALSE}
+// ===============================================================
+// NIGHTLIGHT HARMONIZATION
+// DMSP to VIIRS-like scale
+// ===============================================================
+
+function harmonizeDMSPtoVIIRS(dmspImage) {
+  // Harmonization
+  // Standard approach: polynomial transformation
+  var dn = dmspImage.select('stable_lights');
+  
+  // Quadratic transformation (typical form from literature)
+  // VIIRS_equiv = a + b*DMSP + c*DMSP^2
+  var harmonized = dn
+    .multiply(0.92)      // Linear coefficient
+    .add(dn.pow(2).multiply(0.001))  // Quadratic term
+    .add(0.5)            // Intercept
+    .clamp(0, 65);
+    
+  return harmonized.rename('NIGHTLIGHT');
+}
+
+function getHarmonizedNightlight(year, regionOfInterest) {
+  var nightlight;
+  
+  // Use 2013 as cutoff as 2012 is compromised
+  if (year <= 2013) {
+    var dmsp = DMSP_OLS
+      .filter(ee.Filter.calendarRange(year, year, 'year'))
+      .first();
+      
+    nightlight = dmsp ? harmonizeDMSPtoVIIRS(dmsp) : ee.Image.constant(0).rename('NIGHTLIGHT');
+    
+  } else {
+    var startDate = ee.Date.fromYMD(year, 1, 1);
+    var endDate = ee.Date.fromYMD(year, 12, 31);
+    
+    var viirs = VIIRS_DNB
+      .filterDate(startDate, endDate)
+      .filterBounds(regionOfInterest)
+      .select(['avg_rad']);
+      
+    nightlight = viirs.size().gt(0) 
+      ? viirs.median().rename('NIGHTLIGHT')
+      : ee.Image.constant(0).rename('NIGHTLIGHT');
+  }
+  
+  return nightlight.clip(regionOfInterest);
+}
+```
+
+### Literature-endorsed spectral indices
+
+```{js, eval=FALSE}
+// ===============================================================
+// LITERATURE-ENDORSED SPECTRAL INDICES
+// ===============================================================
+
+function addSpectralIndices(image) {
+  // ========== VEGETATION ==========
+  // NDVI - Tucker (1979) - vegetation presence/absence
+  var ndvi = image.normalizedDifference(['NIR', 'RED']).rename('NDVI');
+  
+  // ========== WATER ==========
+  // NDWI - McFeeters (1996) - water body detection
+  var ndwi = image.normalizedDifference(['GREEN', 'NIR']).rename('NDWI');
+  
+  // MNDWI - Xu (2006) - better for turbid/urban water
+  var mndwi = image.normalizedDifference(['GREEN', 'SWIR1']).rename('MNDWI');
+  
+  // AWEI_nsh - Feyisa et al. (2014) - water extraction (no shadow)
+  var awei_nsh = image.expression(
+    '4 * (GREEN - SWIR1) - (0.25 * NIR + 2.75 * SWIR2)',
+    {'GREEN': image.select('GREEN'), 'SWIR1': image.select('SWIR1'),
+     'NIR': image.select('NIR'), 'SWIR2': image.select('SWIR2')}
+  ).rename('AWEI_NSH');
+  
+  // AWEI_sh - Feyisa et al. (2014) - water in shadow/dark areas
+  var awei_sh = image.expression(
+    'BLUE + 2.5 * GREEN - 1.5 * (NIR + SWIR1) - 0.25 * SWIR2',
+    {'BLUE': image.select('BLUE'), 'GREEN': image.select('GREEN'),
+     'NIR': image.select('NIR'), 'SWIR1': image.select('SWIR1'),
+     'SWIR2': image.select('SWIR2')}
+  ).rename('AWEI_SH');
+  
+  // ========== BARE SOIL / MINING ==========
+  // BSI - Rikimaru et al. (2002) - bare soil detection
+  var bsi = image.expression(
+    '((SWIR1 + RED) - (NIR + BLUE)) / ((SWIR1 + RED) + (NIR + BLUE))',
+    {'SWIR1': image.select('SWIR1'), 'RED': image.select('RED'),
+     'NIR': image.select('NIR'), 'BLUE': image.select('BLUE')}
+  ).rename('BSI');
+  
+  // NDBI - Zha et al. (2003) - built-up/disturbed land
+  // Note: Often mislabeled as UI in literature
+  var ndbi = image.normalizedDifference(['SWIR1', 'NIR']).rename('NDBI');
+  
+  // ========== GEOLOGICAL ==========
+  // Iron Oxide Ratio - Segal (1982) - ferric minerals
+  var ironOxide = image.select('RED')
+    .divide(image.select('BLUE').max(0.0001))
+    .rename('IRON_OXIDE');
+  
+  // Clay/Hydroxyl Index - Madeira (1991), also NBR2
+  // Sensitive to clay minerals, crop residue, and burn scars
+  var clayIndex = image.normalizedDifference(['SWIR1', 'SWIR2'])
+    .rename('CLAY_INDEX');
+  
+  // ========== COLOR ==========
+  // Coloration Index - Pouget et al. (1990) - soil color/iron
+  // Note: Same formula as "Turbidity" for water
+  var ci = image.normalizedDifference(['RED', 'GREEN']).rename('CI');
+  
+  // Brightness Index - Pouget et al. (1989) - soil brightness/salinity
+  var bi = image.expression(
+    'sqrt((BLUE*BLUE + GREEN*GREEN + RED*RED) / 3)',
+    {'BLUE': image.select('BLUE'), 'GREEN': image.select('GREEN'),
+     'RED': image.select('RED')}
+  ).rename('BI');
+  
+  // ========== DERIVED ==========
+  // Water probability composite
+  var waterProb = awei_nsh.gt(0).and(awei_sh.gt(0))
+    .multiply(2)
+    .add(awei_nsh.gt(0).or(awei_sh.gt(0)))
+    .rename('WATER_PROB');
+  
+  return image.addBands([
+    ndvi, ndwi, mndwi, awei_nsh, awei_sh,
+    bsi, ndbi, ironOxide, clayIndex, ci, bi, waterProb
+  ]);
+}
+```
+
+### Texture metrics
+
+```{js, eval=FALSE}
+// ===============================================================
+// TEXTURE METRICS
+// ===============================================================
+
+function addTextureMetrics(image) {
+  var nir = image.select('NIR');
+  
+  // Entropy
+  var nirInt = nir.multiply(10000).toInt32();
+  var entropy = nirInt.entropy(ee.Kernel.square(3)).rename('ENTROPY');
+  
+  // Standard deviation
+  var stdDev = nir.reduceNeighborhood({
+    reducer: ee.Reducer.stdDev(),
+    kernel: ee.Kernel.square(3),
+  }).rename('NIR_STD_DEV');
+  
+  // GLCM texture
+  var nirByte = nir.multiply(255).toByte();
+  var glcm = nirByte.glcmTexture({size: 3});
+  var contrast = glcm.select('NIR_contrast');
+  var correlation = glcm.select('NIR_corr');
+  var variance = glcm.select('NIR_var');
+  
+  return image.addBands([entropy, stdDev, contrast, correlation, variance]);
+}
+```
+
+### Topographic features (Farr et al. 2007)
+
+```{js, eval=FALSE}
+// ===============================================================
+// TOPOGRAPHIC FEATURES - Farr et al. (2007)
+// ===============================================================
+
+function addTopographicFeatures(image, regionOfInterest) {
+  var elevation = SRTM_ELEVATION.clip(regionOfInterest).rename('ELEVATION');
+  var slope = ee.Terrain.slope(elevation).rename('SLOPE');
+  var aspect = ee.Terrain.aspect(elevation).rename('ASPECT');
+  
+  // TRI - Terrain Ruggedness Index
+  var tri = elevation.reduceNeighborhood({
+    reducer: ee.Reducer.stdDev(),
+    kernel: ee.Kernel.square(3),
+  }).rename('TRI');
+  
+  return image.addBands([elevation, slope, aspect, tri]);
+}
+```
+
+### Nightlight-derived features
+
+```{js, eval=FALSE}
+// ===============================================================
+// NIGHTLIGHT-DERIVED FEATURES
+// ===============================================================
+
+function addNightlightFeatures(image, nightlight) {
+  var nlNorm = nightlight.divide(50).clamp(0, 1).rename('NIGHTLIGHT_NORM');
+  var isLit = nightlight.gt(0.5).rename('IS_LIT');
+  
+  var nlDensity = nightlight.reduceNeighborhood({
+    reducer: ee.Reducer.mean(),
+    kernel: ee.Kernel.circle(5),
+  }).rename('NIGHTLIGHT_DENSITY');
+  
+  return image.addBands([nightlight, nlNorm, isLit, nlDensity]);
+}
+```
+
+### Quality bands
+
+```{js, eval=FALSE}
+// ===============================================================
+// QUALITY BANDS
+// ===============================================================
+
+function addQualityBands(image, collection, centerYear) {
+  var count = collection.select('BLUE')
+    .reduce(ee.Reducer.count())
+    .rename('PIXEL_COUNT');
+  
+  var cloudProb = collection.select('BLUE')
+    .reduce(ee.Reducer.stdDev())
+    .rename('CLOUD_PROB');
+  
+  var sourceInfo = ee.Image.constant(centerYear).rename('COMPOSITE_YEAR');
+  var dataMask = count.gt(0).rename('DATA_MASK');
+  
+  return image.addBands([count, cloudProb, sourceInfo, dataMask]);
+}
+```
+
+### Get 3-year dry season collection
+
+```{js, eval=FALSE}
+// ===============================================================
+// GET 3-YEAR DRY SEASON COLLECTION
+// ===============================================================
+
+function getThreeYearDrySeasonCollection(centerYear, regionOfInterest) {
+  var mergedCollection = null;
+  
+  for (var year = centerYear - 1; year <= centerYear + 1; year++) {
+    var dates = getDrySeasonDates(year);
+    var yearCollection;
+    var filterArea = ghanaGeometry;
+    
+    if (year <= 2003) {
+      // Landsat 5 & 7 only
+      var l5 = L5_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(maskCloudsL457Enhanced)
+        .map(applyScaleFactorsL5L7);
+        
+      var l7 = L7_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', 50))
+        .map(processL7);
+        
+      yearCollection = l5.merge(l7);
+        
+    } else if (year <= 2012) {
+      var l5 = L5_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(maskCloudsL457Enhanced)
+        .map(applyScaleFactorsL5L7);
+        
+      var l7 = L7_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(processL7); 
+    
+      yearCollection = l5.merge(l7);
+      
+    } else if (year <= 2021) {
+      // Landsat 7 & 8 - HARMONIZE L8 to L7 reference
+      var l7 = L7_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(processL7);
+        
+      var l8 = L8_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(maskCloudsL89Enhanced)
+        .map(applyScaleFactorsL8L9)
+        .map(harmonizeOLItoETM);  // ADDED: Cross-sensor harmonization
+        
+      yearCollection = l7.merge(l8);
+      
+    } else {
+      // Landsat 8 & 9 - HARMONIZE both to L7 reference
+      var l8 = L8_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(maskCloudsL89Enhanced)
+        .map(applyScaleFactorsL8L9)
+        .map(harmonizeOLItoETM);
+        
+      var l9 = L9_COLLECTION
+        .filterDate(dates.start, dates.end)
+        .filterBounds(filterArea)
+        .filter(ee.Filter.lt('CLOUD_COVER', CONFIG.CLOUD_THRESHOLD))
+        .map(maskCloudsL89Enhanced)
+        .map(applyScaleFactorsL8L9)
+        .map(harmonizeOLItoETM);
+        
+      yearCollection = l8.merge(l9);
+    }
+    
+    mergedCollection = mergedCollection === null 
+      ? yearCollection 
+      : mergedCollection.merge(yearCollection);
+  }
+  
+  return mergedCollection;
+}
+```
+
+### Create 3-year composite with medoid method
+
+```{js, eval=FALSE}
+// ===============================================================
+// CREATE 3-YEAR COMPOSITE WITH MEDOID METHOD
+// ===============================================================
+
+function createThreeYearComposite(centerYear, regionOfInterest) {
+  print('Processing 3-year composite centered on: ' + centerYear);
+  
+  var collection = getThreeYearDrySeasonCollection(centerYear, regionOfInterest);
+  
+  print('  Total images in 3-year window:', collection.size());
+  
+  // CORRECTED: Use MEDOID instead of percentile (Flood 2013)
+  var bands = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'];
+  var baseComposite = calculateMedoid(collection, bands);
+  
+  // Add derived bands (literature-endorsed only)
+  var withIndices = addSpectralIndices(baseComposite);
+  var withTexture = addTextureMetrics(withIndices);
+  var withTopo = addTopographicFeatures(withTexture, regionOfInterest);
+  
+  // Add harmonized nightlight
+  var nightlight = getHarmonizedNightlight(centerYear, regionOfInterest);
+  var composite = withTopo;
+  composite = addNightlightFeatures(composite, nightlight);
+  
+  // Add quality bands
+  composite = addQualityBands(composite, collection, centerYear);
+  
+  // Add temporal statistics
+  var temporalStdDev = collection
+    .select(['NIR', 'RED', 'SWIR1'])
+    .reduce(ee.Reducer.stdDev())
+    .rename(['NIR_STD_TEMPORAL', 'RED_STD_TEMPORAL', 'SWIR1_STD_TEMPORAL']);
+  
+  composite = composite.addBands(temporalStdDev);
+  
+  // Add valid pixel count for quality assessment
+  var validPixelCount = addValidPixelCount(collection, bands);
+  composite = composite.addBands(validPixelCount);
+  
+  // Add metadata
+  composite = composite
+    .set('center_year', centerYear)
+    .set('year_range', (centerYear - 1) + '-' + (centerYear + 1))
+    .set('buffer_km', CONFIG.BUFFER_KM)
+    .set('composite_method', 'medoid_3year')
+    .set('season', 'dry_extended')
+    .set('cloud_threshold', CONFIG.CLOUD_THRESHOLD)
+    .set('nightlight_sensor', centerYear <= 2012 ? 'DMSP_harmonized' : 'VIIRS')
+    .set('cross_sensor_harmonization', 'Roy_et_al_2016')
+    .set('system:time_start', ee.Date.fromYMD(centerYear, 1, 1).millis());
+  
+  return composite.clip(regionOfInterest).toFloat();
+}
+```
+
+### NDVI baseline for anomaly calculation (2000–2004)
+
+```{js, eval=FALSE}
+// ===============================================================
+// NDVI BASELINE FOR ANOMALY CALCULATION 2000-2004
+// ===============================================================
+
+function calculateNDVIBaseline(regionOfInterest) {
+  var baselineYears = [2000, 2001, 2002, 2003, 2004];
+  var baselineComposites = baselineYears.map(function(year) {
+    return createThreeYearComposite(year, regionOfInterest).select('NDVI');
+  });
+  
+  var baselineCollection = ee.ImageCollection.fromImages(baselineComposites);
+  return baselineCollection.mean().rename('NDVI_BASELINE');
+}
+
+// Add NDVI anomaly to composite
+function addNDVIAnomaly(composite, ndviBaseline) {
+  var ndviAnomaly = composite.select('NDVI')
+    .subtract(ndviBaseline)
+    .rename('NDVI_ANOMALY');
+  return composite.addBands(ndviAnomaly);
+}
+```
+
+### Export function
+
+```{js, eval=FALSE}
+// ===============================================================
+// EXPORT FUNCTION
+// ===============================================================
+
+function exportThreeYearComposite(centerYear, exportName, ndviBaseline) {
+  var composite = createThreeYearComposite(centerYear, studyArea);
+  
+  // Add NDVI anomaly
+  composite = addNDVIAnomaly(composite, ndviBaseline);
+  
+  // Expected bands (literature-endorsed)
+  var expectedBands = [
+  // Base reflectance
+  'BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2',
+  // Spectral indices
+  'NDVI', 'NDWI', 'MNDWI', 'AWEI_NSH', 'AWEI_SH',
+  'BSI', 'NDBI', 'IRON_OXIDE', 'CLAY_INDEX', 'CI', 'BI', 'WATER_PROB',
+  // Texture
+  'ENTROPY', 'NIR_STD_DEV', 'NIR_contrast', 'NIR_corr', 'NIR_var',
+  // Topography
+  'ELEVATION', 'SLOPE', 'ASPECT', 'TRI',
+  // Nightlight
+  'NIGHTLIGHT', 'NIGHTLIGHT_NORM', 'IS_LIT', 'NIGHTLIGHT_DENSITY',
+  // Quality
+  'PIXEL_COUNT', 'CLOUD_PROB', 'COMPOSITE_YEAR', 'DATA_MASK',
+  'NIR_STD_TEMPORAL', 'RED_STD_TEMPORAL', 'SWIR1_STD_TEMPORAL',
+  'VALID_PIXEL_COUNT',
+  // Anomaly
+  'NDVI_ANOMALY'
+];
+  
+  print('Bands in composite for ' + centerYear + ':', composite.bandNames());
+  
+  Export.image.toDrive({
+    image: composite,
+    description: exportName + '_medoid_' + centerYear,
+    folder: 'GEE_Ghana_Mining_Medoid',
+    fileNamePrefix: exportName + '_medoid_' + centerYear,
+    scale: CONFIG.OUTPUT_SCALE,
+    region: bounds,
+    crs: CONFIG.OUTPUT_CRS,
+    maxPixels: 1e13,
+    fileFormat: 'GeoTIFF',
+    formatOptions: {
+      cloudOptimized: true
+    }
+  });
+  
+  print('Export queued: ' + exportName + '_medoid_' + centerYear);
+}
+```
+
+### Batch processing
+
+```{js, eval=FALSE}
+// ===============================================================
+// BATCH PROCESSING
+// ===============================================================
+
+// First calculate NDVI baseline (2000-2004)
+print('Calculating NDVI baseline from 2000-2004...');
+var ndviBaseline = calculateNDVIBaseline(studyArea);
+
+// Export years
+var annualSeries = [];
+for (var year = 2000; year <= 2019; year++) {
+  annualSeries.push(year);
+}
+
+// Export composites
+annualSeries.forEach(function(year) {
+  exportThreeYearComposite(year, 'Mining_Composite', ndviBaseline);
+});
+```
+
+### Visualization
+
+```{js, eval=FALSE}
+// ===============================================================
+// VISUALIZATION
+// ===============================================================
+
+var sample2019 = createThreeYearComposite(2019, studyArea);
+sample2019 = addNDVIAnomaly(sample2019, ndviBaseline);
+
+var sample2010 = createThreeYearComposite(2010, studyArea);
+sample2010 = addNDVIAnomaly(sample2010, ndviBaseline);
+
+var sample2005 = createThreeYearComposite(2005, studyArea);
+sample2005 = addNDVIAnomaly(sample2005, ndviBaseline);
+
+var sample2000 = createThreeYearComposite(2000, studyArea);
+sample2000 = addNDVIAnomaly(sample2000, ndviBaseline);
+
+Map.centerObject(studyArea, 10);
+Map.addLayer(miningPolygons2019, {color: 'red'}, 'Mining Polygons 2019');
+Map.addLayer(studyArea, {color: 'yellow', opacity: 0.3}, 'Study Area');
+
+Map.addLayer(sample2019, 
+  {bands: ['RED', 'GREEN', 'BLUE'], min: 0, max: 0.3}, 
+  'RGB 2018-2020 Medoid');
+
+Map.addLayer(sample2019.select('BSI'), 
+  {min: -0.5, max: 0.5, palette: ['green', 'yellow', 'red']}, 
+  'BSI 2018-2020');
+
+Map.addLayer(sample2019.select('NDVI'), 
+  {min: -0.1, max: 0.8, palette: ['red', 'yellow', 'green']}, 
+  'NDVI 2018-2020');
+
+Map.addLayer(sample2019.select('NDVI_ANOMALY'), 
+  {min: -0.3, max: 0.3, palette: ['red', 'white', 'green']}, 
+  'NDVI Anomaly 2018-2020');
+  
+Map.addLayer(sample2000, 
+  {bands: ['RED', 'GREEN', 'BLUE'], min: 0, max: 0.3}, 
+  'RGB 1999-2001 Medoid');
+  
+Map.addLayer(sample2005, 
+  {bands: ['RED', 'GREEN', 'BLUE'], min: 0, max: 0.3}, 
+  'RGB 2004-2006 Medoid');
+  
+Map.addLayer(sample2010, 
+  {bands: ['RED', 'GREEN', 'BLUE'], min: 0, max: 0.3}, 
+  'RGB 2009-2011 Medoid');
+
+print('========================================');
+print('CORRECTED COMPOSITE CREATION');
+print('========================================');
+print('Key corrections:');
+print('✓ Medoid compositing (Flood 2013)');
+print('✓ Cross-sensor harmonization (Roy et al. 2016)');
+print('✓ Literature-endorsed indices only');
+print('✓ NDVI anomaly from 2000-2004 baseline');
+print('✓ UTM projection for accurate area calculations');
+print('✓ 50% cloud threshold as per paper');
+print('========================================');
+```
+
+
+# Script 2: Training sample export (`02_export_training_samples.js`)
+
+**Summary of the method**
+
+Training points were placed by hand on the 2019 composite, with the RGB
+composite as the primary reference. ESA WorldCover 2020 and NDVI were
+displayed as visual aids only. Points were stratified into three zones by
+distance to the 2019 mining polygons: inside the polygons (zone 1), 0–2 km
+outside (zone 2) and 2–5 km outside (zone 3). The hand-placed geometries are
+stored as Code Editor imports named `<Class>_<zone>` (for example `Water_1`);
+the exported master CSV is the archived training dataset.
+
+Recoding of classes is done in R
+
+### Script header
+
+```{js, eval=FALSE}
+// ===============================================================
+// EXPORT MANUALLY CREATED GEOMETRY COLLECTIONS
+// Exports points to both Google Drive and GEE Assets by zone
+// Includes ESA WorldCover and RGB composite for landcover identification
+// ===============================================================
+
+// Get Ghana boundary
+var ghana = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+  .filter(ee.Filter.eq('country_na', 'Ghana'))
+  .first()
+  .geometry();
+
+// Import 2019 mining polygons (reference year)
+var miningPolygons2019 = ee.FeatureCollection('projects/XXX/assets/ghana_polygons2019');
+
+// Load the 2019 composite (reference year)
+var composite2019 = ee.Image('projects/XXX/assets/Mining_Composite_2019');
+```
+
+### Band naming correction
+
+```{js, eval=FALSE}
+// ===============================================================
+// BAND NAMING CORRECTION
+// ===============================================================
+function ensureCompositeBands(image) {
+  var spectralBands = [
+    'BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2', 
+    'NDVI', 'BSI', 'NDWI', 'MNDWI', 'UI', 'MINING_INDEX'
+  ];
+  
+  var bands = image.bandNames();
+  
+  if (bands.indexOf('NDVI').getInfo() !== -1) {
+    return image;
+  }
+  
+  var numBandsToRename = Math.min(bands.size().getInfo(), spectralBands.length);
+  var originalBands = bands.slice(0, numBandsToRename);
+  var newBands = spectralBands.slice(0, numBandsToRename);
+  
+  return image.select(originalBands, newBands);
+}
+
+composite2019 = ensureCompositeBands(composite2019);
+```
+
+### ESA WorldCover land-cover reference
+
+```{js, eval=FALSE}
+// ===============================================================
+// ESA WORLDCOVER LANDCOVER CLASSIFICATION
+// ===============================================================
+
+var esaWorldCover = ee.ImageCollection("ESA/WorldCover/v100")
+  .first()
+  .clip(ghana);
+
+// Define landcover classes and their codes
+var LANDCOVER_CLASSES = {
+  'Water': 1,
+  'Dense_Forest': 2,
+  'Woodland_Savanna': 3,
+  'Urban': 4,
+  'Bare_Soil': 5,
+  'Agriculture': 6,
+  'Other': 0
+};
+
+// Remap ESA WorldCover to my classification scheme
+function remapWorldCover(worldCover) {
+  return worldCover.remap(
+    [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100], 
+    [LANDCOVER_CLASSES.Dense_Forest,      // 10: Tree cover
+     LANDCOVER_CLASSES.Woodland_Savanna,  // 20: Shrubland
+     LANDCOVER_CLASSES.Woodland_Savanna,  // 30: Grassland
+     LANDCOVER_CLASSES.Agriculture,       // 40: Cropland
+     LANDCOVER_CLASSES.Urban,             // 50: Built-up
+     LANDCOVER_CLASSES.Bare_Soil,         // 60: Bare/sparse vegetation
+     LANDCOVER_CLASSES.Other,             // 70: Snow and ice
+     LANDCOVER_CLASSES.Water,             // 80: Permanent water bodies
+     LANDCOVER_CLASSES.Water,             // 90: Herbaceous wetland
+     LANDCOVER_CLASSES.Dense_Forest,      // 95: Mangroves
+     LANDCOVER_CLASSES.Other]             // 100: Moss and lichen
+  ).rename('landcover');
+}
+
+var esaLandcover = remapWorldCover(esaWorldCover);
+```
+
+### Create buffer zones around mining polygons
+
+```{js, eval=FALSE}
+// ===============================================================
+// CREATE BUFFER ZONES AROUND MINING POLYGONS
+// ===============================================================
+
+// Define buffer distances in meters
+var BUFFER_1_INNER = 1;       // Inner buffer starts at 1m
+var BUFFER_1_OUTER = 2000;    // Inner buffer extends to 2km
+var BUFFER_2_INNER = 2000;    // Outer buffer starts at 2km
+var BUFFER_2_OUTER = 5000;    // Outer buffer extends to 5km
+
+// Create buffer geometries
+var miningArea = miningPolygons2019.geometry();
+var buffer1 = miningArea.buffer(BUFFER_1_OUTER).difference(miningArea.buffer(BUFFER_1_INNER));
+var buffer2 = miningArea.buffer(BUFFER_2_OUTER).difference(miningArea.buffer(BUFFER_2_INNER));
+
+// Zone definitions
+var ZONES = {
+  1: 'Mining_Areas',
+  2: 'Buffer_1_2km', 
+  3: 'Buffer_2_5km'
+};
+```
+
+### Visualization setup for landcover identification
+
+```{js, eval=FALSE}
+// ===============================================================
+// VISUALIZATION SETUP FOR LANDCOVER IDENTIFICATION
+// ===============================================================
+
+// Clear map and center on Ghana
+Map.clear();
+Map.centerObject(ghana, 7);
+
+// Define visualization parameters
+var rgbVis = {
+  bands: ['RED', 'GREEN', 'BLUE'], 
+  min: 0, 
+  max: 0.3,
+  gamma: 1.2
+};
+
+var esaVis = {
+  bands: ['Map'],
+  min: 10,
+  max: 100,
+  palette: [
+    '#006400', // 10: Tree cover - dark green
+    '#ffbb22', // 20: Shrubland - orange
+    '#ffff4c', // 30: Grassland - bright yellow
+    '#f096ff', // 40: Cropland - pink
+    '#fa0000', // 50: Built-up - red
+    '#b4b4b4', // 60: Bare/sparse vegetation - gray
+    '#f0f0f0', // 70: Snow and ice - white
+    '#0064c8', // 80: Permanent water bodies - blue
+    '#0096a0', // 90: Herbaceous wetland - teal
+    '#00cf75', // 95: Mangroves - green
+    '#fae6a0'  // 100: Moss and lichen - beige
+  ]
+};
+
+var landcoverVis = {
+  min: 0, 
+  max: 6,
+  palette: ['gray', 'blue', 'darkgreen', 'lightgreen', 'red', 'brown', 'yellow']
+};
+
+var ndviVis = {
+  min: -0.2, 
+  max: 0.8, 
+  palette: ['red', 'yellow', 'green']
+};
+
+// Add base layers for landcover identification
+Map.addLayer(composite2019, rgbVis, 'RGB Composite (2019)', true);
+Map.addLayer(esaWorldCover, esaVis, 'ESA WorldCover Original', false);
+Map.addLayer(esaLandcover, landcoverVis, 'Remapped Landcover (Our Classes)', true);
+Map.addLayer(composite2019.select('NDVI'), ndviVis, 'NDVI (Vegetation Index)', false);
+
+// Add zone boundaries for reference
+Map.addLayer(miningArea, {color: 'purple'}, 'Zone 1: Mining Areas', true);
+Map.addLayer(buffer1, {color: 'orange'}, 'Zone 2: Buffer 1-2km', true);
+Map.addLayer(buffer2, {color: 'cyan'}, 'Zone 3: Buffer 2-5km', true);
+```
+
+### Landcover identification legend
+
+```{js, eval=FALSE}
+// ===============================================================
+// LANDCOVER IDENTIFICATION LEGEND
+// ===============================================================
+
+// Create legend panel
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }
+});
+
+// Create legend title
+var legendTitle = ui.Label({
+  value: 'LANDCOVER CLASSES',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '16px',
+    margin: '0 0 4px 0',
+    padding: '0'
+  }
+});
+legend.add(legendTitle);
+
+// Add legend entries
+var legendEntries = [
+  {name: 'Water (1)', color: 'blue'},
+  {name: 'Dense Forest (2)', color: 'darkgreen'},
+  {name: 'Woodland/Savanna (3)', color: 'lightgreen'},
+  {name: 'Urban (4)', color: 'red'},
+  {name: 'Bare Soil (5)', color: 'brown'},
+  {name: 'Agriculture (6)', color: 'yellow'},
+  {name: 'Other (0)', color: 'gray'}
+];
+
+legendEntries.forEach(function(entry) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: entry.color,
+      padding: '8px',
+      margin: '0 8px 0 0'
+    }
+  });
+  
+  var nameLabel = ui.Label({
+    value: entry.name,
+    style: {margin: '0 0 2px 6px'}
+  });
+  
+  var panel = ui.Panel({
+    widgets: [colorBox, nameLabel],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+  
+  legend.add(panel);
+});
+
+Map.add(legend);
+```
+
+### ESA WorldCover legend
+
+```{js, eval=FALSE}
+// ===============================================================
+// ESA WORLDCOVER REFERENCE LEGEND
+// ===============================================================
+
+var esaLegend = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px'
+  }
+});
+
+var esaTitle = ui.Label({
+  value: 'ESA WORLDCOVER CLASSES',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '16px',
+    margin: '0 0 4px 0',
+    padding: '0'
+  }
+});
+esaLegend.add(esaTitle);
+
+var esaEntries = [
+  {name: 'Tree cover (10)', color: '#006400'},
+  {name: 'Shrubland (20)', color: '#ffbb22'},
+  {name: 'Grassland (30)', color: '#ffff4c'},
+  {name: 'Cropland (40)', color: '#f096ff'},
+  {name: 'Built-up (50)', color: '#fa0000'},
+  {name: 'Bare/sparse (60)', color: '#b4b4b4'},
+  {name: 'Water bodies (80)', color: '#0064c8'},
+  {name: 'Wetland (90)', color: '#0096a0'},
+  {name: 'Mangroves (95)', color: '#00cf75'}
+];
+
+esaEntries.forEach(function(entry) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: entry.color,
+      padding: '8px',
+      margin: '0 8px 0 0'
+    }
+  });
+  
+  var nameLabel = ui.Label({
+    value: entry.name,
+    style: {margin: '0 0 2px 6px', fontSize: '12px'}
+  });
+  
+  var panel = ui.Panel({
+    widgets: [colorBox, nameLabel],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+  
+  esaLegend.add(panel);
+});
+
+Map.add(esaLegend);
+```
+
+### Sampling instructions
+
+```{js, eval=FALSE}
+// ===============================================================
+// SAMPLING INSTRUCTIONS
+// ===============================================================
+
+print('=== MANUAL SAMPLING WITH LANDCOVER REFERENCE ===');
+print('');
+print('LAYERS AVAILABLE FOR LANDCOVER IDENTIFICATION:');
+print('1. RGB Composite (2019) - True color imagery');
+print('2. ESA WorldCover Original - Official ESA classification');
+print('3. Remapped Landcover - My 7-class system');
+print('4. NDVI - Vegetation health index');
+print('5. Zone boundaries - Mining areas and buffers');
+print('');
+print('SAMPLING WORKFLOW:');
+print('1. Use RGB composite as primary reference');
+print('2. Toggle ESA WorldCover for classification guidance');
+print('3. Check remapped landcover for our class system');
+print('4. Use NDVI to distinguish vegetation types');
+print('5. Create geometry imports with names like: Water_1, Dense_Forest_2, etc.');
+print('6. Run export section when sampling is complete');
+print('');
+print('GEOMETRY NAMING CONVENTION:');
+print('Zone 1 (Mining): Water_1, Dense_Forest_1, Urban_1, etc.');
+print('Zone 2 (Buffer 1-2km): Water_2, Dense_Forest_2, Urban_2, etc.');
+print('Zone 3 (Buffer 2-5km): Water_3, Dense_Forest_3, Urban_3, etc.');
+print('');
+print('LANDCOVER IDENTIFICATION TIPS:');
+print('- Water: Blue in RGB, high NDVI in wetlands, low in open water');
+print('- Dense Forest: Dark green in RGB, high NDVI (>0.6)');
+print('- Woodland/Savanna: Mixed green/brown, moderate NDVI (0.3-0.6)');
+print('- Urban: Gray/white in RGB, low NDVI, geometric patterns');
+print('- Bare Soil: Brown/tan in RGB, very low NDVI (<0.2)');
+print('- Agriculture: Varies by season, moderate NDVI, field patterns');
+print('');
+```
+
+### Function to convert geometry to feature collection
+
+```{js, eval=FALSE}
+// ===============================================================
+// FUNCTION TO CONVERT GEOMETRY TO FEATURE COLLECTION
+// ===============================================================
+
+function createSampleFeatureCollection(geometry, className, classCode, zone, notes) {
+  if (!geometry) {
+    print('Warning: Geometry for ' + className + '_' + zone + ' not found');
+    return ee.FeatureCollection([]);
+  }
+  
+  var features;
+  
+  // Check geometry type
+  var geomType = geometry.type().getInfo();
+  
+  if (geomType === 'Point') {
+    // Single point
+    var coords = geometry.coordinates();
+    features = [ee.Feature(geometry, {
+      'longitude': coords.get(0),
+      'latitude': coords.get(1),
+      'class_name': className,
+      'landcover_code': classCode,
+      'zone': zone,
+      'zone_name': ZONES[zone],
+      'sampling_method': 'manual_geometry',
+      'notes': notes || 'Manually sampled using GEE geometry tools',
+      'verified': 'manual',
+      'timestamp': Date.now()
+    })];
+  } else if (geomType === 'MultiPoint') {
+    // MultiPoint - extract individual points
+    var pointList = geometry.coordinates().getInfo(); // Get client-side coordinates
+    features = pointList.map(function(coords) {
+      // coords is now a client-side array [lon, lat]
+      return ee.Feature(ee.Geometry.Point(coords), {
+        'longitude': coords[0], // Use array indexing instead of .get()
+        'latitude': coords[1],  // Use array indexing instead of .get()
+        'class_name': className,
+        'landcover_code': classCode,
+        'zone': zone,
+        'zone_name': ZONES[zone],
+        'sampling_method': 'manual_geometry',
+        'notes': notes || 'Manually sampled using GEE geometry tools',
+        'verified': 'manual',
+        'timestamp': Date.now()
+      });
+    });
+  } else {
+    print('Warning: ' + className + '_' + zone + ' is not a Point or MultiPoint geometry');
+    return ee.FeatureCollection([]);
+  }
+  
+  return ee.FeatureCollection(features);
+}
+```
+
+### Export function (Drive and assets)
+
+```{js, eval=FALSE}
+// ===============================================================
+// EXPORT FUNCTION FOR BOTH DRIVE AND ASSETS
+// ===============================================================
+
+function exportSampleCollection(featureCollection, className, zone, description) {
+  if (featureCollection.size().getInfo() === 0) {
+    print('No points to export for ' + description);
+    return;
+  }
+  
+  var timestamp = Date.now();
+  
+  // Export to Google Drive
+  Export.table.toDrive({
+    collection: featureCollection,
+    description: 'Manual_' + className + '_Zone' + zone + '_Drive',
+    fileFormat: 'CSV',
+    folder: 'GEE_Manual_Sampling',
+    selectors: [
+      'longitude', 'latitude', 'zone', 'zone_name', 'landcover_code', 
+      'class_name', 'sampling_method', 'notes', 'verified', 'timestamp'
+    ]
+  });
+  
+  // Export to GEE Assets
+  Export.table.toAsset({
+    collection: featureCollection,
+    description: 'Manual_' + className + '_Zone' + zone + '_Asset',
+    assetId: 'projects/XXX/assets/manual_samples_' + className.toLowerCase() + '_zone' + zone
+  });
+  
+  print('Exports created for ' + description + ': ' + featureCollection.size().getInfo() + ' points');
+  print('  - Drive: Manual_' + className + '_Zone' + zone + '_Drive');
+  print('  - Asset: manual_samples_' + className.toLowerCase() + '_zone' + zone);
+}
+```
+
+### Process all geometry collections by zone
+
+```{js, eval=FALSE}
+// ===============================================================
+// PROCESS ALL GEOMETRY COLLECTIONS BY ZONE
+// ===============================================================
+
+// Function to safely get geometry (returns null if not exists)
+function getGeometry(name) {
+  try {
+    return eval(name);
+  } catch(e) {
+    return null;
+  }
+}
+
+// Process each zone
+for (var zone = 1; zone <= 3; zone++) {
+  print('=== PROCESSING ZONE ' + zone + ' (' + ZONES[zone] + ') ===');
+  
+  var zoneCollections = [];
+  var zonePointCount = 0;
+  
+  // Process each landcover class for this zone
+  Object.keys(LANDCOVER_CLASSES).forEach(function(className) {
+    var classCode = LANDCOVER_CLASSES[className];
+    var geometryName = className + '_' + zone;
+    var geometry = getGeometry(geometryName);
+    
+    if (geometry) {
+      var fc = createSampleFeatureCollection(
+        geometry, 
+        className, 
+        classCode, 
+        zone, 
+        'Zone ' + zone + ' ' + className + ' samples'
+      );
+      
+      var pointCount = fc.size().getInfo();
+      if (pointCount > 0) {
+        // Export individual class for this zone
+        exportSampleCollection(fc, className, zone, className + ' Zone ' + zone);
+        zoneCollections.push(fc);
+        zonePointCount += pointCount;
+        
+        print('  ' + className + ': ' + pointCount + ' points');
+      }
+    } else {
+      print('  ' + className + ': No geometry found (' + geometryName + ')');
+    }
+  });
+  
+  // Combine all classes for this zone and export
+  if (zoneCollections.length > 0) {
+    var zoneCombined = zoneCollections[0];
+    for (var i = 1; i < zoneCollections.length; i++) {
+      zoneCombined = zoneCombined.merge(zoneCollections[i]);
+    }
+    
+    // Export combined zone collection
+    Export.table.toDrive({
+      collection: zoneCombined,
+      description: 'Manual_All_Classes_Zone' + zone + '_Drive',
+      fileFormat: 'CSV',
+      folder: 'GEE_Manual_Sampling',
+      selectors: [
+        'longitude', 'latitude', 'zone', 'zone_name', 'landcover_code', 
+        'class_name', 'sampling_method', 'notes', 'verified', 'timestamp'
+      ]
+    });
+    
+    Export.table.toAsset({
+      collection: zoneCombined,
+      description: 'Manual_All_Classes_Zone' + zone + '_Asset',
+      assetId: 'projects/XXX/assets/manual_samples_all_zone' + zone
+    });
+    
+    print('Zone ' + zone + ' Combined Export: ' + zonePointCount + ' total points');
+    print('  - Drive: Manual_All_Classes_Zone' + zone + '_Drive');
+    print('  - Asset: manual_samples_all_zone' + zone);
+  } else {
+    print('No points found for Zone ' + zone);
+  }
+  
+  print('');
+}
+```
+
+### Export all zones combined
+
+```{js, eval=FALSE}
+// ===============================================================
+// EXPORT ALL ZONES COMBINED
+// ===============================================================
+
+print('=== CREATING MASTER EXPORT (ALL ZONES) ===');
+
+var allZoneCollections = [];
+var totalPointCount = 0;
+
+// Collect all individual class collections across all zones
+Object.keys(LANDCOVER_CLASSES).forEach(function(className) {
+  var classCode = LANDCOVER_CLASSES[className];
+  var classCollections = [];
+  
+  for (var zone = 1; zone <= 3; zone++) {
+    var geometryName = className + '_' + zone;
+    var geometry = getGeometry(geometryName);
+    
+    if (geometry) {
+      var fc = createSampleFeatureCollection(
+        geometry, 
+        className, 
+        classCode, 
+        zone, 
+        'Combined dataset - ' + className + ' Zone ' + zone
+      );
+      
+      if (fc.size().getInfo() > 0) {
+        classCollections.push(fc);
+      }
+    }
+  }
+  
+  // Combine all zones for this class
+  if (classCollections.length > 0) {
+    var classCombined = classCollections[0];
+    for (var i = 1; i < classCollections.length; i++) {
+      classCombined = classCombined.merge(classCollections[i]);
+    }
+    
+    allZoneCollections.push(classCombined);
+    var classTotal = classCombined.size().getInfo();
+    totalPointCount += classTotal;
+    
+    print(className + ' (all zones): ' + classTotal + ' points');
+  }
+});
+
+// Create master combined collection
+if (allZoneCollections.length > 0) {
+  var masterCollection = allZoneCollections[0];
+  for (var i = 1; i < allZoneCollections.length; i++) {
+    masterCollection = masterCollection.merge(allZoneCollections[i]);
+  }
+  
+  // Export master collection
+  Export.table.toDrive({
+    collection: masterCollection,
+    description: 'Manual_Samples_Master_Dataset_Drive',
+    fileFormat: 'CSV',
+    folder: 'GEE_Manual_Sampling',
+    selectors: [
+      'longitude', 'latitude', 'zone', 'zone_name', 'landcover_code', 
+      'class_name', 'sampling_method', 'notes', 'verified', 'timestamp'
+    ]
+  });
+  
+  Export.table.toAsset({
+    collection: masterCollection,
+    description: 'Manual_Samples_Master_Dataset_Asset',
+    assetId: 'projects/XXX/assets/manual_samples_master_dataset'
+  });
+  
+  print('');
+  print('MASTER DATASET EXPORT CREATED:');
+  print('Total points: ' + totalPointCount);
+  print('  - Drive: Manual_Samples_Master_Dataset_Drive');
+  print('  - Asset: manual_samples_master_dataset');
+} else {
+  print('No manual sample points found to export');
+}
+```
+
+### Summary and instructions
+
+```{js, eval=FALSE}
+// ===============================================================
+// SUMMARY AND INSTRUCTIONS
+// ===============================================================
+
+print('');
+print('=== EXPORT SUMMARY ===');
+print('Expected geometry import names:');
+print('Zone 1: Water_1, Dense_Forest_1, Woodland_Savanna_1, Urban_1, Bare_Soil_1, Agriculture_1, Other_1');
+print('Zone 2: Water_2, Dense_Forest_2, Woodland_Savanna_2, Urban_2, Bare_Soil_2, Agriculture_2, Other_2'); 
+print('Zone 3: Water_3, Dense_Forest_3, Woodland_Savanna_3, Urban_3, Bare_Soil_3, Agriculture_3, Other_3');
+print('');
+print('Exports created:');
+print('1. Individual class exports by zone (Drive + Asset)');
+print('2. Combined class exports by zone (Drive + Asset)');
+print('3. Master dataset with all points (Drive + Asset)');
+print('');
+print('Check the Tasks tab to run all exports');
+print('Assets will be saved to: projects/XXX/assets/');
+print('CSV files will be saved to: Google Drive/GEE_Manual_Sampling/');
+```
+
+
+# References
+
+Farr, T. G., et al. (2007). The Shuttle Radar Topography Mission. *Reviews of
+Geophysics*, 45, RG2004.
+
+Feyisa, G. L., Meilby, H., Fensholt, R., & Proud, S. R. (2014). Automated
+Water Extraction Index: A new technique for surface water mapping using
+Landsat imagery. *Remote Sensing of Environment*, 140, 23–35.
+
+Flood, N. (2013). Seasonal composite Landsat TM/ETM+ images using the medoid
+(a multi-dimensional median). *Remote Sensing*, 5(12), 6481–6500.
+
+Gorelick, N., et al. (2017). Google Earth Engine: Planetary-scale geospatial
+analysis for everyone. *Remote Sensing of Environment*, 202, 18–27.
+
+Maus, V., et al. (2022). An update on global mining land use. *Scientific
+Data*, 9, 433.
+
+Roy, D. P., et al. (2016). Characterization of Landsat-7 to Landsat-8
+reflective wavelength and normalized difference vegetation index continuity.
+*Remote Sensing of Environment*, 185, 57–70.
+
+TODO: add the remaining index references (Tucker 1979; McFeeters 1996;
+Xu 2006; Rikimaru et al. 2002; Zha et al. 2003; Segal 1982; Pouget et al.
+1990).
