@@ -1,0 +1,36 @@
+# This file tells GitHub and Zenodo how to cite this repository.
+# Validate it at https://citation-file-format.github.io/cff-initializer-javascript/
+# or with `cffconvert --validate` before creating the release.
+cff-version: 1.2.0
+message: "If you use this code, please cite it using the metadata below."
+type: software
+title: "Code for: Quantification of Ghana's historical mining expansion"
+abstract: >-
+  Google Earth Engine and R code to back-cast annual mining footprints for
+  Ghana, 2000-2019. It builds 3-year dry-season Landsat medoid composites,
+  trains a national random forest on manually labelled points from 2019,
+  validates it with spatially blocked cross-validation, applies backward
+  transition rules, estimates uncertainty with Monte Carlo draws from a
+  bootstrapped ensemble, and compares mining onset with an independent
+  convolutional neural network and industry statistics.
+authors:
+  - family-names: "Bräuer"
+    given-names: "Hannes"
+    orcid: "https://orcid.org/0009-0002-1884-5944"
+    affiliation: >-
+      Department of International Environment and Development Studies,
+      Norwegian University of Life Sciences (NMBU)
+version: "1.0.0"
+date-released: "2026-11-06"
+license: MIT
+# TODO: replace REPO_NAME with the repository's exact name on GitHub
+repository-code: "https://github.com/hannesbra/Braeuer_26_ghana_mining_expansion"
+keywords:
+  - mining
+  - Ghana
+  - Landsat
+  - Google Earth Engine
+  - random forest
+  - spatial cross-validation
+  - artisanal and small-scale mining
+  - land cover change
