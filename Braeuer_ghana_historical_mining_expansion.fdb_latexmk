@@ -1,17 +1,17 @@
 # Fdb version 4
-["bibtex Braeuer_ghana_historical_mining_expansion"] 1793958090.15792 "Braeuer_ghana_historical_mining_expansion.aux" "Braeuer_ghana_historical_mining_expansion.bbl" "Braeuer_ghana_historical_mining_expansion" 1793958103.54409 0
+["bibtex Braeuer_ghana_historical_mining_expansion"] 1793958090.15792 "Braeuer_ghana_historical_mining_expansion.aux" "Braeuer_ghana_historical_mining_expansion.bbl" "Braeuer_ghana_historical_mining_expansion" 1793981350.66078 0
   "./references.bib" 1793376717 818758 e001fa164b968f3787a6fb4c7a5cf7da ""
-  "Braeuer_ghana_historical_mining_expansion.aux" 1793958102 36523 b109e59744296ed6495377e46129c4dd "pdflatex"
+  "Braeuer_ghana_historical_mining_expansion.aux" 1793981350 36523 b109e59744296ed6495377e46129c4dd "pdflatex"
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/bibtex/bst/apacite/apacite.bst" 1374952728 146156 9d7b79dbf9d91133318126032cff8c27 ""
   (generated)
   "Braeuer_ghana_historical_mining_expansion.bbl"
   "Braeuer_ghana_historical_mining_expansion.blg"
   (rewritten before read)
-["pdflatex"] 1793958090.38914 "c:/Users/hanne/Documents/GitHub/ghana-remote-sensing-paper/1_GISience & Remote Sensing/Braeuer_ghana_historical_mining_expansion.tex" "Braeuer_ghana_historical_mining_expansion.pdf" "Braeuer_ghana_historical_mining_expansion" 1793958103.5447 0
-  "Braeuer_ghana_historical_mining_expansion.aux" 1793958102 36523 b109e59744296ed6495377e46129c4dd "pdflatex"
+["pdflatex"] 1793981338.26859 "c:/Users/hanne/Documents/GitHub/Braeuer_26_ghana_mining_expansion/Braeuer_ghana_historical_mining_expansion.tex" "Braeuer_ghana_historical_mining_expansion.pdf" "Braeuer_ghana_historical_mining_expansion" 1793981350.66135 0
+  "Braeuer_ghana_historical_mining_expansion.aux" 1793981350 36523 b109e59744296ed6495377e46129c4dd "pdflatex"
   "Braeuer_ghana_historical_mining_expansion.bbl" 1793958090 64464 f9a6fccdceb0253ff2a92a76eb02c94d "bibtex Braeuer_ghana_historical_mining_expansion"
-  "Braeuer_ghana_historical_mining_expansion.out" 1793958102 5368 9282ffd2c91a51249368ef37891d380b "pdflatex"
-  "Braeuer_ghana_historical_mining_expansion.tex" 1793958076 96503 ade6dca813312af56636503a2918cd65 ""
+  "Braeuer_ghana_historical_mining_expansion.out" 1793981350 5368 9282ffd2c91a51249368ef37891d380b "pdflatex"
+  "Braeuer_ghana_historical_mining_expansion.tex" 1793981337 95917 a57f314404547413203ce2f50cd726cb ""
   "C:/Users/hanne/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map" 1793957499 82507 a9eef8696c92627b87e9975edea03b2a ""
   "C:/Users/hanne/AppData/Local/MiKTeX/fonts/pk/ljfour/jknappen/ec/dpi450/ecss0800.pk" 1791446497 11964 4f1d61f1d6e85839c4023051d628af06 ""
   "C:/Users/hanne/AppData/Local/MiKTeX/fonts/pk/ljfour/jknappen/ec/dpi600/ecbi1095.pk" 1782987012 38336 c69d50ec017537462f49bf6093b3d6a8 ""
@@ -54,6 +54,7 @@
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/ecti0800.tfm" 993062316 2840 b6fc7cd2d2eed024b253ee3d8fe2d4cb ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/ecti1000.tfm" 993062320 2840 5606e1a681c23005308de9d61c09a8ff ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/ecti1095.tfm" 993062322 2852 cf233cde705f180d95560390f0f826e7 ""
+  "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/ectt0800.tfm" 993062338 1348 ad6a25e9916b0e5ddfcc7ffcb8d43448 ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/ectt1095.tfm" 993062342 1352 fa21dcb5ddc7d1dc47d14cd897fdeb0f ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/jknappen/ec/tcrm1095.tfm" 993062508 1460 8005ce585ff351dff78998923504da5e ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/fonts/tfm/public/amsfonts/cmextra/cmbsy5.tfm" 1233951848 1120 1e8878807317373affa7f7bba4cf2f6a ""
@@ -184,7 +185,7 @@
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/tex/latex/tools/longtable.sty" 1761901070 16014 dfa4b4d4e04a78a3f05a90c19711737a ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/tex/latex/url/url.sty" 1388490452 12796 8edb7d69a20b857904dd0ea757c14ec9 ""
   "C:/Users/hanne/AppData/Local/Programs/MiKTeX/tex/latex/xcolor/xcolor.sty" 1729265222 55384 b454dec21c2d9f45ec0b793f0995b992 ""
-  "c:/Users/hanne/Documents/GitHub/ghana-remote-sensing-paper/1_GISience & Remote Sensing/Braeuer_ghana_historical_mining_expansion.tex" 1793958076 96503 ade6dca813312af56636503a2918cd65 ""
+  "c:/Users/hanne/Documents/GitHub/Braeuer_26_ghana_mining_expansion/Braeuer_ghana_historical_mining_expansion.tex" 1793981337 95917 a57f314404547413203ce2f50cd726cb ""
   "figures/drop_cluster_importance_multimetric.pdf" 1791486198 49660 cfd0ac9e6bd42b3b00f66720464c0650 ""
   "figures/feature_overlap_heatmap.pdf" 1790764945 37836 19758f388040ac339759af3ff234a9cf ""
   "figures/feature_set_comparison.pdf" 1791486195 36621 2594d9b5c7c7901d21ca9bf089c61a98 ""

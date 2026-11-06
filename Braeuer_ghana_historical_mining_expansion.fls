@@ -1,6 +1,6 @@
-PWD c:\Users\hanne\Documents\GitHub\ghana-remote-sensing-paper\1_GISience & Remote Sensing
+PWD c:\Users\hanne\Documents\GitHub\Braeuer_26_ghana_mining_expansion
 INPUT C:\Users\hanne\AppData\Local\MiKTeX\miktex\data\le\pdftex\pdflatex.fmt
-INPUT c:\Users\hanne\Documents\GitHub\ghana-remote-sensing-paper\1_GISience & Remote Sensing\Braeuer_ghana_historical_mining_expansion.tex
+INPUT c:\Users\hanne\Documents\GitHub\Braeuer_26_ghana_mining_expansion\Braeuer_ghana_historical_mining_expansion.tex
 OUTPUT Braeuer_ghana_historical_mining_expansion.log
 INPUT C:\Users\hanne\AppData\Local\Programs\MiKTeX\tex\latex\xcolor\xcolor.sty
 INPUT .\interact.cls
@@ -294,6 +294,8 @@ INPUT .\figures\fig_overlay_4panel.png
 INPUT .\figures\fig_overlay_4panel.png
 INPUT .\figures\fig_overlay_4panel.png
 INPUT .\figures\fig_overlay_4panel.png
+INPUT C:\Users\hanne\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ectt0800.tfm
+INPUT C:\Users\hanne\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ectt0800.tfm
 INPUT .\Braeuer_ghana_historical_mining_expansion.bbl
 INPUT .\Braeuer_ghana_historical_mining_expansion.bbl
 INPUT Braeuer_ghana_historical_mining_expansion.bbl
